@@ -129,32 +129,43 @@ class DataDownloader:
                 progress_callback(0, f"开始下载 {symbol} {timeframe} 数据...")
 
             # 分批下载数据
+            # 关键：单次 fetch_ohlcv 最多返回 limit 根K线，游标推进不得超过
+            # limit 根的覆盖时长，否则中间会产生大洞；并且按实际返回的最后一根推进，
+            # 防止"步长跳步"导致数据静默截断。
             all_data = []
             current_dt = start_dt
+            limit_per_request = 1000
+            max_step = timedelta(milliseconds=limit_per_request * timeframe_ms)
+            max_requests = int(total_candles / limit_per_request) * 4 + 1000  # 防死循环护栏
+            requests_made = 0
 
-            while current_dt < end_dt:
+            while current_dt < end_dt and requests_made < max_requests:
+                requests_made += 1
                 try:
-                    # 计算本次下载的结束时间
-                    batch_end = min(current_dt + timedelta(days=30), end_dt)
-
                     # 下载数据
                     ohlcv = exchange.fetch_ohlcv(
                         symbol,
                         timeframe,
                         int(current_dt.timestamp() * 1000),
-                        limit=1000
+                        limit=limit_per_request
                     )
 
                     if ohlcv:
                         all_data.extend(ohlcv)
+                        # 按实际返回推进：从最后一根K线的下一根继续；游标只进不退
+                        last_dt = datetime.fromtimestamp(ohlcv[-1][0] / 1000.0)
+                        current_dt = max(
+                            last_dt + timedelta(milliseconds=timeframe_ms),
+                            current_dt + max_step,
+                        )
+                    else:
+                        # 空返回：按单次 limit 的理论覆盖推进，防止死循环
+                        current_dt = current_dt + max_step
 
                     # 更新进度
                     progress = min(100, int((current_dt - start_dt).total_seconds() / (end_dt - start_dt).total_seconds() * 100))
                     if progress_callback:
                         progress_callback(progress, f"已下载 {len(all_data)} 条数据...")
-
-                    # 移动到下一批
-                    current_dt = batch_end
 
                     # 限速
                     time.sleep(exchange.rateLimit / 1000)
@@ -162,6 +173,11 @@ class DataDownloader:
                 except Exception as e:
                     self.logger.error(f"下载批次失败: {e}")
                     break
+
+            if requests_made >= max_requests:
+                self.logger.warning(
+                    f"下载 {symbol} {timeframe} 达到请求数上限 {max_requests}，区间可能不完整"
+                )
 
             if not all_data:
                 return {'success': False, 'error': '没有下载到数据'}
@@ -430,6 +446,37 @@ class DataDownloader:
 
             # 检测间断
             gaps = self._detect_data_gaps(df, timeframe)
+
+            # 首尾盲区：_detect_data_gaps 只能发现"两个已有数据点之间"的缺口，
+            # 请求区间的头部（start_date → 首根K线）和尾部（末根K线 → end_date）
+            # 没有右侧/左侧边界点，永远不会被检测到，必须显式补充。
+            df_head_tail = df.copy()
+            if df_head_tail.index.tz is not None:
+                df_head_tail.index = df_head_tail.index.tz_localize(None)
+            expected_interval = pd.Timedelta(timeframe) if timeframe != '1w' else pd.Timedelta('7d')
+            if len(df_head_tail):
+                period_start = pd.to_datetime(start_date)
+                period_end = pd.to_datetime(end_date)
+                first_ts = df_head_tail.index.min()
+                last_ts = df_head_tail.index.max()
+                if last_ts < period_end - expected_interval * 2:
+                    gaps.append({
+                        'start_time': last_ts,
+                        'end_time': period_end,
+                        'duration': period_end - last_ts,
+                        'expected_interval': expected_interval,
+                        'missing_intervals': int((period_end - last_ts) / expected_interval),
+                    })
+                    print(f"检测到尾部缺口: {last_ts} -> {period_end}")
+                if first_ts > period_start + expected_interval * 2:
+                    gaps.append({
+                        'start_time': period_start,
+                        'end_time': first_ts,
+                        'duration': first_ts - period_start,
+                        'expected_interval': expected_interval,
+                        'missing_intervals': int((first_ts - period_start) / expected_interval),
+                    })
+                    print(f"检测到头部缺口: {period_start} -> {first_ts}")
 
             if not gaps:
                 print("没有发现数据间断")

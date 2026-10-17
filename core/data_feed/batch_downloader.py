@@ -132,10 +132,25 @@ class SmartBatchDownloader(DataDownloader):
             all_data = []
             current_dt = start_dt
             batch_count = 0
-            
+
+            # 游标推进规则：不得超过单次 limit 根K线的理论覆盖时长，
+            # 优先按实际返回的最后一根推进，否则会产生大洞并静默截断尾部。
+            timeframe_ms = exchange.parse_timeframe(timeframe) * 1000
+            max_step = timedelta(milliseconds=config.max_candles_per_batch * timeframe_ms)
+
+            def advance_cursor(cursor, ohlcv_result):
+                if ohlcv_result:
+                    last_dt = datetime.fromtimestamp(ohlcv_result[-1][0] / 1000.0)
+                    return max(
+                        last_dt + timedelta(milliseconds=timeframe_ms),
+                        cursor + max_step,
+                    )
+                return cursor + max_step
+
             while current_dt < end_dt:
                 try:
                     batch_count += 1
+                    ohlcv = []
                     
                     # 计算本次下载的结束时间
                     batch_end = min(current_dt + timedelta(days=batch_days), end_dt)
@@ -163,9 +178,9 @@ class SmartBatchDownloader(DataDownloader):
                     else:
                         self.logger.warning(f"第 {batch_count} 批没有数据")
                     
-                    # 移动到下一批
-                    current_dt = batch_end
-                    
+                    # 移动到下一批（按实际返回推进，防止跳步丢数据）
+                    current_dt = advance_cursor(current_dt, ohlcv)
+
                     # 限速和延迟
                     time.sleep(config.delay_seconds)
                     
@@ -203,7 +218,7 @@ class SmartBatchDownloader(DataDownloader):
                             self.logger.error(f"第 {batch_count} 批重试 {retry_count} 失败: {retry_e}")
                     
                     # 如果重试失败，继续下一批
-                    current_dt = batch_end
+                    current_dt = advance_cursor(current_dt, ohlcv)
             
             if not all_data:
                 return {'success': False, 'error': '没有下载到数据'}

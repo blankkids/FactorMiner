@@ -142,10 +142,22 @@ class RealDataClient:
             
         # 根据时间段进行过滤并拼接
         sliced_dfs = []
+        timeframe_delta = pd.Timedelta(self.timeframe) if self.timeframe != '1w' else pd.Timedelta('7d')
         for period in periods:
             if len(period) == 2:
                 start_dt, end_dt = pd.to_datetime(period[0]), pd.to_datetime(period[1])
                 sliced_df = df[(df.index >= start_dt) & (df.index <= end_dt)].copy()
+
+                # 覆盖率护栏：本地数据不足以覆盖配置区间时立即失败，
+                # 绝不静默用残缺窗口计算指标（否则 IC/fitness 会严重失真）。
+                expected_bars = (end_dt - start_dt) / timeframe_delta + 1
+                if expected_bars >= 20 and len(sliced_df) < 0.95 * expected_bars:
+                    raise RuntimeError(
+                        f"本地数据不足以覆盖 {self.exchange} {pair} {self.timeframe} 的区间 "
+                        f"{period[0]} ~ {period[1]}：仅 {len(sliced_df)}/{int(expected_bars)} 根K线，"
+                        f"数据截止 {df.index.max()}。请先在数据下载页补齐该区间数据。"
+                    )
+
                 sliced_df["returns"] = self.target_spec.build(sliced_df)
                 sliced_dfs.append(sliced_df)
                 
