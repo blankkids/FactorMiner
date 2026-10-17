@@ -34,7 +34,7 @@ def run_inspector(args):
 
     base_config = {}
     if args.config and os.path.exists(args.config):
-        with open(args.config, "r") as f:
+        with open(args.config, "r", encoding="utf-8") as f:
             try:
                 base_config = json.load(f)
             except Exception as e:

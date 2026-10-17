@@ -53,3 +53,18 @@ def parse_data_filename(filename: str) -> tuple[str, str, str]:
         if len(symbol_parts) < 3 or symbol_parts[-1] != symbol_parts[-2]:
             raise ValueError(f"futures filename lacks a CCXT settlement suffix: {filename}")
     return safe_name, timeframe, trade_type
+
+
+def symbol_from_safe(safe_name: str, trade_type: str) -> str:
+    """Reverse :func:`safe_symbol`, returning the CCXT market symbol."""
+    if not safe_name or "_" not in safe_name:
+        raise ValueError(f"not a canonical V4 safe symbol: {safe_name}")
+    parts = safe_name.split("_")
+    if trade_type == "futures":
+        if len(parts) < 3 or parts[-1] != parts[-2]:
+            raise ValueError(f"futures safe symbol lacks a CCXT settlement suffix: {safe_name}")
+        quote, settle = parts[-2], parts[-1]
+        base = "_".join(parts[:-2])
+        return f"{base}/{quote}:{settle}"
+    base, quote = safe_name.rsplit("_", 1)
+    return f"{base}/{quote}"

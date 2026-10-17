@@ -19,6 +19,11 @@ class TaskManager:
 class LaunchRequest(BaseModel):
     miner: str
     config: str
+    exchange: str | None = None  # optional override for data_feeds.exchange
+    pairs: list[str] | None = None  # optional override for data_feeds.pairs
+    timeframe: str | None = None  # optional override for data_feeds.timeframe
+    mine_period: list[list[str]] | None = None  # optional override for data_feeds.mine_period
+    test_period: list[list[str]] | None = None  # optional override for data_feeds.test_period
 
 class DownloadRequest(BaseModel):
     exchange: str
@@ -37,6 +42,9 @@ class BatchLifecycleUpdateRequest(BaseModel):
     lifecycle_status: str
 
 class CompareFactorsRequest(BaseModel):
+    factor_ids: list[str]
+
+class BatchDeleteRequest(BaseModel):
     factor_ids: list[str]
 
 LIFECYCLE_STATUSES = {"DISCOVERED", "INSPECTED", "PAPER_TRADING", "LIVE", "RETIRED"}
@@ -78,7 +86,7 @@ async def get_configs():
     for f in os.listdir(config_dir):
         if f.endswith(".json"):
             try:
-                with open(os.path.join(config_dir, f), 'r') as file:
+                with open(os.path.join(config_dir, f), 'r', encoding='utf-8') as file:
                     configs_data[f] = json.load(file)
             except Exception as e:
                 configs_data[f] = {"error": str(e)}
@@ -141,6 +149,32 @@ async def get_exchange_meta(exchange: str, trade_type: str = "futures"):
         print(f"Error fetching CCXT meta: {e}")
         
     return meta
+
+@app.get("/api/local_data")
+async def get_local_data():
+    """List locally downloaded market data (exchange, instrument, symbol, timeframe)."""
+    from core.data_feed.naming import parse_data_filename, symbol_from_safe
+
+    files = []
+    data_root = Path("data")
+    if data_root.exists():
+        for file_path in sorted(data_root.rglob("*.feather")):
+            try:
+                safe_name, timeframe, trade_type = parse_data_filename(file_path.name)
+                symbol = symbol_from_safe(safe_name, trade_type)
+            except ValueError:
+                continue
+            rel = file_path.relative_to(data_root).parts
+            if len(rel) != 3:
+                continue
+            exchange, instrument_type, _ = rel
+            files.append({
+                "exchange": exchange,
+                "instrument_type": instrument_type,
+                "symbol": symbol,
+                "timeframe": timeframe,
+            })
+    return {"files": files}
 
 @app.get("/api/tasks")
 async def get_tasks():
@@ -417,6 +451,23 @@ async def batch_update_factor_lifecycle(req: BatchLifecycleUpdateRequest):
             missing.append(factor_id)
     return {"updated": updated, "missing": missing, "lifecycle_status": lifecycle_status}
 
+@app.delete("/api/factors/batch")
+async def batch_delete_factors(req: BatchDeleteRequest):
+    factor_ids = list(dict.fromkeys(req.factor_ids))
+    if not factor_ids:
+        raise HTTPException(status_code=422, detail="Select at least one factor to delete.")
+
+    from core.storage.factor_storage import get_global_storage
+
+    storage = get_global_storage()
+    results = []
+    for factor_id in factor_ids:
+        if not storage.get_metadata(factor_id):
+            results.append({"factor_id": factor_id, "deleted": False})
+            continue
+        results.append({"factor_id": factor_id, "deleted": bool(storage.delete_factor(factor_id))})
+    return {"results": results, "deleted_count": sum(1 for item in results if item["deleted"])}
+
 @app.get("/api/factors/{factor_id}")
 async def get_factor(factor_id: str):
     from core.storage.factor_storage import get_global_storage
@@ -425,6 +476,16 @@ async def get_factor(factor_id: str):
     if not metadata:
         raise HTTPException(status_code=404, detail=f"Factor {factor_id} was not found")
     return _factor_detail(metadata)
+
+@app.delete("/api/factors/{factor_id}")
+async def delete_factor(factor_id: str):
+    from core.storage.factor_storage import get_global_storage
+
+    storage = get_global_storage()
+    if not storage.get_metadata(factor_id):
+        raise HTTPException(status_code=404, detail=f"Factor {factor_id} was not found")
+    deleted = storage.delete_factor(factor_id)
+    return {"factor_id": factor_id, "deleted": bool(deleted)}
 
 @app.patch("/api/factors/{factor_id}/lifecycle")
 async def update_factor_lifecycle(factor_id: str, req: LifecycleUpdateRequest):
@@ -449,6 +510,7 @@ async def launch_mining(req: LaunchRequest, background_tasks: BackgroundTasks):
         "status": "running",
         "miner": req.miner,
         "config": req.config,
+        "exchange": req.exchange,
         "progress": 0,
         "start_time": datetime.datetime.now().isoformat(),
         "error_msg": None,
@@ -463,10 +525,22 @@ async def launch_mining(req: LaunchRequest, background_tasks: BackgroundTasks):
     # Broadcast new task immediately
     await manager.broadcast({"type": "task_update", "task": task_data})
     
-    background_tasks.add_task(run_mining_task_background, task_id, req.miner, req.config)
+    background_tasks.add_task(
+        run_mining_task_background, task_id, req.miner, req.config,
+        req.exchange, req.pairs, req.timeframe, req.mine_period, req.test_period,
+    )
     return {"task_id": task_id}
 
-async def run_mining_task_background(task_id: str, miner_name: str, config_name: str):
+async def run_mining_task_background(
+    task_id: str,
+    miner_name: str,
+    config_name: str,
+    exchange_override: str = None,
+    pairs_override: list = None,
+    timeframe_override: str = None,
+    mine_period_override: list = None,
+    test_period_override: list = None,
+):
     import json
     import os
     import time
@@ -534,9 +608,30 @@ async def run_mining_task_background(task_id: str, miner_name: str, config_name:
 
     try:
         config_path = os.path.join("user_workspace", "configs", config_name)
-        with open(config_path, 'r') as f:
+        with open(config_path, 'r', encoding='utf-8') as f:
             config = json.load(f)
-            
+
+        if exchange_override or pairs_override or timeframe_override or mine_period_override or test_period_override:
+            data_feeds = config.setdefault("data_feeds", {})
+            notes = []
+            if exchange_override and exchange_override != data_feeds.get("exchange", "binance"):
+                notes.append(f"exchange: {data_feeds.get('exchange', 'binance')} -> {exchange_override}")
+                data_feeds["exchange"] = exchange_override
+            if pairs_override:
+                notes.append(f"pairs: {', '.join(data_feeds.get('pairs', []))} -> {', '.join(pairs_override)}")
+                data_feeds["pairs"] = list(pairs_override)
+            if timeframe_override and timeframe_override != data_feeds.get("timeframe", "1m"):
+                notes.append(f"timeframe: {data_feeds.get('timeframe', '1m')} -> {timeframe_override}")
+                data_feeds["timeframe"] = timeframe_override
+            if mine_period_override:
+                notes.append(f"mine_period: {data_feeds.get('mine_period')} -> {mine_period_override}")
+                data_feeds["mine_period"] = [list(p) for p in mine_period_override]
+            if test_period_override:
+                notes.append(f"test_period: {data_feeds.get('test_period')} -> {test_period_override}")
+                data_feeds["test_period"] = [list(p) for p in test_period_override]
+            task["logs"] = [*task["logs"][-199:], "[INFO] Launch overrides - " + "; ".join(notes)]
+        task["exchange"] = config.get("data_feeds", {}).get("exchange", "binance")
+
         config["paradigm"] = miner_name
 
         # 后台任务与 CLI 使用同一套插件发现流程；不能依赖此前是否访问过

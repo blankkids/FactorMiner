@@ -13,6 +13,7 @@ import {
   Loader2,
   RefreshCw,
   Save,
+  Trash2,
 } from 'lucide-react';
 import { useI18n } from '../i18n';
 
@@ -287,6 +288,7 @@ export function Inspector() {
   const [statusDraft, setStatusDraft] = useState('DISCOVERED');
   const [selectedForReview, setSelectedForReview] = useState<string[]>([]);
   const [batchStatus, setBatchStatus] = useState('INSPECTED');
+  const [deleteBusy, setDeleteBusy] = useState(false);
   const [analysis, setAnalysis] = useState<AnalysisPayload | null>(null);
   const [comparison, setComparison] = useState<AnalysisPayload[]>([]);
   const [loadingCatalog, setLoadingCatalog] = useState(true);
@@ -391,6 +393,68 @@ export function Inspector() {
       : [...current, factorId]);
   };
 
+  const visibleIds = filteredFactors.map((factor) => factor.factor_id);
+  const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedForReview.includes(id));
+  const someVisibleSelected = !allVisibleSelected && visibleIds.some((id) => selectedForReview.includes(id));
+
+  const toggleSelectAll = () => {
+    setSelectedForReview((current) => {
+      if (allVisibleSelected) {
+        const visible = new Set(visibleIds);
+        return current.filter((id) => !visible.has(id));
+      }
+      return [...new Set([...current, ...visibleIds])];
+    });
+  };
+
+  const forgetDeleted = (deletedIds: Set<string>) => {
+    setFactors((current) => current.filter((factor) => !deletedIds.has(factor.factor_id)));
+    setSelectedForReview((current) => current.filter((id) => !deletedIds.has(id)));
+    setComparison((current) => current.filter((payload) => !deletedIds.has(payload.factor.factor_id)));
+    if (selectedId && deletedIds.has(selectedId)) {
+      setSelectedId('');
+      setSearchParams({});
+    }
+  };
+
+  const deleteFactor = async (factorId: string) => {
+    if (!window.confirm(t('inspector.deleteConfirm', { id: factorId }))) return;
+    setDeleteBusy(true);
+    try {
+      const response = await fetch(`${API_BASE}/api/factors/${encodeURIComponent(factorId)}`, { method: 'DELETE' });
+      if (!response.ok) throw new Error('Unable to delete factor.');
+      forgetDeleted(new Set([factorId]));
+      setError('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to delete factor.');
+    } finally {
+      setDeleteBusy(false);
+    }
+  };
+
+  const deleteSelected = async () => {
+    if (!selectedForReview.length) return;
+    if (!window.confirm(t('inspector.deleteBatchConfirm', { count: selectedForReview.length }))) return;
+    setDeleteBusy(true);
+    try {
+      const response = await fetch(`${API_BASE}/api/factors/batch`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ factor_ids: selectedForReview }),
+      });
+      if (!response.ok) throw new Error('Unable to delete factors.');
+      const payload = await response.json();
+      const results: { factor_id: string; deleted: boolean }[] = payload?.results || [];
+      const gone = new Set(results.filter((item) => item.deleted).map((item) => item.factor_id));
+      forgetDeleted(gone);
+      setError('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to delete factors.');
+    } finally {
+      setDeleteBusy(false);
+    }
+  };
+
   const saveLifecycle = async () => {
     if (!detail) return;
     setSavingStatus(true);
@@ -490,6 +554,7 @@ export function Inspector() {
             </select>
             <button onClick={() => void saveBatchLifecycle()} disabled={savingBatch} className="inline-flex items-center gap-2 rounded-md border border-violet-700/60 bg-violet-950/40 px-3 py-2 text-xs font-bold text-violet-200 disabled:opacity-50"><Save className="w-3.5 h-3.5" />{t('inspector.batchReview')}</button>
             <button onClick={() => void compareSelected()} disabled={loadingComparison || selectedForReview.length < 2 || selectedForReview.length > 5} className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-xs font-bold text-primary-foreground disabled:opacity-50"><GitCompareArrows className="w-3.5 h-3.5" />{loadingComparison ? t('common.loading') : t('inspector.compare')}</button>
+            <button onClick={() => void deleteSelected()} disabled={deleteBusy || !selectedForReview.length} className="inline-flex items-center gap-2 rounded-md border border-red-900/60 bg-red-950/40 px-3 py-2 text-xs font-bold text-red-300 hover:bg-red-950/70 disabled:opacity-50"><Trash2 className="w-3.5 h-3.5" />{t('inspector.delete')}</button>
           </div>
         </div>
       )}
@@ -499,7 +564,20 @@ export function Inspector() {
           <div className="p-4 border-b border-border space-y-3">
             <div className="flex items-center justify-between">
               <h2 className="font-semibold text-sm">{t('inspector.catalog')}</h2>
-              <span className="rounded bg-secondary px-2 py-0.5 text-xs text-muted-foreground">{filteredFactors.length} / {factors.length}</span>
+              <div className="flex items-center gap-3">
+                <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={allVisibleSelected}
+                    ref={(el) => { if (el) el.indeterminate = someVisibleSelected; }}
+                    onChange={toggleSelectAll}
+                    disabled={!visibleIds.length}
+                    className="h-3.5 w-3.5 accent-primary"
+                  />
+                  {t('inspector.selectAll')}
+                </label>
+                <span className="rounded bg-secondary px-2 py-0.5 text-xs text-muted-foreground">{filteredFactors.length} / {factors.length}</span>
+              </div>
             </div>
             <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t('inspector.search')} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus:border-primary" />
             <div className="grid grid-cols-3 gap-2">
@@ -561,6 +639,7 @@ export function Inspector() {
                       {LIFECYCLE_STATUSES.map((status) => <option key={status} value={status}>{t(`status.${status}`)}</option>)}
                     </select>
                     <button onClick={() => void saveLifecycle()} disabled={savingStatus || statusDraft === detail.metadata.lifecycle_status} className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-xs font-bold text-primary-foreground disabled:opacity-50"><Save className="w-3.5 h-3.5" />{savingStatus ? t('inspector.saving') : t('inspector.saveStatus')}</button>
+                    <button onClick={() => void deleteFactor(detail.metadata.factor_id)} disabled={deleteBusy} className="inline-flex items-center gap-2 rounded-md border border-red-900/60 bg-red-950/40 px-3 py-2 text-xs font-bold text-red-300 hover:bg-red-950/70 disabled:opacity-50"><Trash2 className="w-3.5 h-3.5" />{t('inspector.delete')}</button>
                   </div>
                 </div>
                 <div className="mt-5 grid grid-cols-2 lg:grid-cols-4 gap-3">

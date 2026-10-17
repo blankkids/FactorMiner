@@ -28,7 +28,7 @@ def run_miner(args):
         logger.error(f"Config file {args.config} not found!")
         sys.exit(1)
         
-    with open(args.config, 'r') as f:
+    with open(args.config, 'r', encoding='utf-8') as f:
         try:
             config_dict = json.load(f)
         except json.JSONDecodeError as e:

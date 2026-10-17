@@ -1,4 +1,5 @@
 import os
+import glob
 import json
 import logging
 import pandas as pd
@@ -74,6 +75,10 @@ class FactorStorageInterface(ABC):
     def load_llm_source(self, filename: str) -> str:
         """Load persisted LLM source by its storage-relative filename."""
         raise NotImplementedError
+
+    def delete_factor(self, factor_id: str) -> bool:
+        """Remove a factor record together with every artifact it references."""
+        raise NotImplementedError
     
     def save_nn_factor_channel(
         self,
@@ -146,7 +151,7 @@ class LocalFactorStorage(FactorStorageInterface):
             
     def _save_meta(self, metadata: FactorMetadata):
         path = os.path.join(self.meta_dir, f"{metadata.factor_id}.json")
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             json.dump(dataclasses.asdict(metadata), f, indent=4)
             
     def save_gp_factor(self, ast_dict: Dict, metadata: FactorMetadata) -> bool:
@@ -176,7 +181,7 @@ class LocalFactorStorage(FactorStorageInterface):
     ) -> bool:
         code_file = f"{metadata.factor_id}.py"
         code_path = os.path.join(self.src_dir, code_file)
-        with open(code_path, "w") as f:
+        with open(code_path, "w", encoding="utf-8") as f:
             f.write(python_code)
             
         metadata.logic_reference = {
@@ -345,7 +350,7 @@ class LocalFactorStorage(FactorStorageInterface):
     def get_metadata(self, factor_id: str) -> FactorMetadata:
         path = os.path.join(self.meta_dir, f"{factor_id}.json")
         if os.path.exists(path):
-            with open(path, "r") as f:
+            with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             return FactorMetadata(**data)
         return None
@@ -386,13 +391,71 @@ class LocalFactorStorage(FactorStorageInterface):
             if filename.endswith(".json"):
                 path = os.path.join(self.meta_dir, filename)
                 try:
-                    with open(path, "r") as f:
+                    with open(path, "r", encoding="utf-8") as f:
                         data = json.load(f)
                         if "logic_hash" in data and data["logic_hash"]:
                             hashes.add(data["logic_hash"])
                 except Exception as e:
                     logger.error(f"Failed to read logic_hash from {path}: {e}")
         return hashes
+
+    def delete_factor(self, factor_id: str) -> bool:
+        """Remove a factor's metadata plus every artifact it references.
+
+        NN model artifacts are shared across channels of the same model version,
+        so they are only removed when no other factor still references them.
+        """
+        def _remove(directory: str, filename: Any) -> bool:
+            safe = os.path.basename(str(filename or ""))
+            if not safe:
+                return False
+            path = os.path.join(directory, safe)
+            if os.path.exists(path):
+                os.remove(path)
+                return True
+            return False
+
+        metadata = self.get_metadata(factor_id)
+        removed = False
+
+        if metadata:
+            logic_ref = metadata.logic_reference or {}
+            lineage = metadata.data_lineage or {}
+
+            if _remove(self.weights_dir, logic_ref.get("weights_file")):
+                removed = True
+            if _remove(self.src_dir, logic_ref.get("source_file")):
+                removed = True
+            if lineage.get("snapshot_file") and _remove(self.val_dir, lineage.get("snapshot_file")):
+                removed = True
+            # Fallback for records saved without a snapshot_file lineage entry.
+            if _remove(self.val_dir, f"{factor_id}.parquet"):
+                removed = True
+
+            model_version = logic_ref.get("model_version")
+            if model_version:
+                others_in_use = any(
+                    (record.logic_reference or {}).get("model_version") == model_version
+                    for record in self.list_metadata()
+                    if record.factor_id != factor_id
+                )
+                if not others_in_use:
+                    artifact_file = logic_ref.get("model_artifact") or logic_ref.get("artifact_file")
+                    if artifact_file and _remove(self.models_dir, artifact_file):
+                        removed = True
+                    safe_version = os.path.basename(str(model_version))
+                    for path in glob.glob(os.path.join(self.models_dir, f"{safe_version}.*")):
+                        os.remove(path)
+                        removed = True
+
+        if _remove(self.meta_dir, f"{factor_id}.json"):
+            removed = True
+
+        if removed:
+            logger.info("Deleted factor %s and its artifacts", factor_id)
+        else:
+            logger.warning("delete_factor found nothing to remove for %s", factor_id)
+        return removed
 
 
 def get_global_storage() -> FactorStorageInterface:

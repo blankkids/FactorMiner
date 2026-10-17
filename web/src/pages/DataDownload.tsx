@@ -1,10 +1,12 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Download, CheckCircle2, Info, Loader2 } from 'lucide-react';
 import { useWebSocket } from '../hooks/useWebSocket';
+import { useI18n } from '../i18n';
 import Slider from 'rc-slider';
 import 'rc-slider/assets/index.css';
 
 export function DataDownload() {
+  const { t } = useI18n();
   const [exchange, setExchange] = useState('binance');
   
   // Meta state
@@ -98,14 +100,14 @@ export function DataDownload() {
 
   const handleDownload = () => {
     if (symbols.length === 0 || timeframes.length === 0 || !tradeType) {
-      alert("Please select at least one Symbol, Timeframe, and Trade Type.");
+      alert(t('data.alertSelect'));
       return;
     }
 
     setIsDownloading(true);
     setProgress(0);
-    setDownloadMsg('Starting download...');
-    setLogs(['> Initializing batch download job...', '> Contacting server...']);
+    setDownloadMsg(t('data.starting'));
+    setLogs([t('data.initLog1'), t('data.initLog2')]);
     
     // Format dates back to YYYY-MM-DD
     const startDate = new Date(dateRange[0]).toISOString().split('T')[0];
@@ -126,7 +128,7 @@ export function DataDownload() {
     }).catch(err => {
       console.error(err);
       setIsDownloading(false);
-      setDownloadMsg('Failed to start download');
+      setDownloadMsg(t('data.startFailed'));
     });
   };
 
@@ -169,7 +171,7 @@ export function DataDownload() {
             {/* Exchange Selection */}
             <div className="w-64 flex-shrink-0 space-y-2">
               <label className="text-sm font-medium text-muted-foreground flex items-center gap-2">
-                Exchange
+                {t('data.exchange')}
                 {loadingMeta && <Loader2 className="w-4 h-4 animate-spin text-primary" />}
               </label>
               <select 
@@ -184,7 +186,7 @@ export function DataDownload() {
             {/* Trade Types */}
             <div className="flex-shrink-0 space-y-3">
               <label className="text-sm font-medium text-muted-foreground flex justify-between">
-                <span>Trade Type (Single Select)</span>
+                <span>{t('data.tradeType')}</span>
               </label>
               <div className="flex flex-wrap gap-2">
                 {meta.trade_types?.map((tt: string) => (
@@ -206,7 +208,7 @@ export function DataDownload() {
             {/* Timeframes */}
             <div className="flex-1 space-y-3">
               <label className="text-sm font-medium text-muted-foreground flex justify-between">
-                <span>Timeframes (Multi-Select)</span>
+                <span>{t('data.timeframes')}</span>
               </label>
               <div className="flex flex-wrap gap-2">
                 {meta.timeframes?.map((tf: string) => (
@@ -230,8 +232,8 @@ export function DataDownload() {
           <div className="w-full">
             <div className="space-y-3">
               <label className="text-sm font-medium text-muted-foreground flex justify-between items-center">
-                <span>Symbols (Multi-Select)</span>
-                <span className="text-xs text-primary">{symbols.length} selected</span>
+                <span>{t('data.symbols')}</span>
+                <span className="text-xs text-primary">{t('common.nSelected', { count: symbols.length })}</span>
               </label>
               
               <div className="flex gap-2 mb-2">
@@ -240,14 +242,14 @@ export function DataDownload() {
                   value={customSymbol}
                   onChange={(e) => setCustomSymbol(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && handleAddCustomSymbol()}
-                  placeholder="Add custom (e.g. PEPE/USDT)"
+                  placeholder={t('data.customSymbol')}
                   className="flex-1 bg-background border border-border rounded-md px-3 py-1.5 text-sm text-foreground focus:outline-none focus:border-primary transition-colors"
                 />
                 <button 
                   onClick={handleAddCustomSymbol}
                   className="px-4 py-1.5 bg-secondary text-secondary-foreground text-sm font-medium rounded-md hover:bg-secondary/80 transition-colors"
                 >
-                  Add
+                  {t('data.add')}
                 </button>
               </div>
               
@@ -272,10 +274,10 @@ export function DataDownload() {
           {/* Date Range Slider */}
           <div className="space-y-6 pt-4 border-t border-border">
             <div className="flex justify-between items-end">
-              <label className="text-sm font-medium text-muted-foreground">Historical Date Range</label>
+              <label className="text-sm font-medium text-muted-foreground">{t('data.dateRange')}</label>
               <div className="text-sm font-mono text-foreground bg-secondary px-3 py-1 rounded-md border border-border">
-                {new Date(dateRange[0]).toISOString().split('T')[0]} 
-                <span className="text-muted-foreground mx-2">to</span> 
+                {new Date(dateRange[0]).toISOString().split('T')[0]}
+                <span className="text-muted-foreground mx-2">{t('data.to')}</span>
                 {new Date(dateRange[1]).toISOString().split('T')[0]}
               </div>
             </div>
@@ -299,15 +301,15 @@ export function DataDownload() {
 
           {/* Download Strategy */}
           <div className="space-y-2 pt-4 border-t border-border">
-            <label className="text-sm font-medium text-muted-foreground">Download Strategy</label>
-            <select 
+            <label className="text-sm font-medium text-muted-foreground">{t('data.downloadStrategy')}</label>
+            <select
               value={downloadMode}
               onChange={(e) => setDownloadMode(e.target.value)}
               className="w-full max-w-md bg-background border border-border rounded-md px-3 py-2 text-foreground focus:outline-none focus:border-primary transition-colors"
             >
-              <option value="merge">Smart Merge & Deduplicate (Recommended)</option>
-              <option value="fill_gap">Fill Gap & Merge (Auto-extend)</option>
-              <option value="overwrite">Force Overwrite Local Data</option>
+              <option value="merge">{t('data.modeMerge')}</option>
+              <option value="fill_gap">{t('data.modeFillGap')}</option>
+              <option value="overwrite">{t('data.modeOverwrite')}</option>
             </select>
           </div>
         </div>
@@ -317,7 +319,7 @@ export function DataDownload() {
           <div className="mb-8 p-4 bg-[#0a0a0a] rounded-lg border border-border flex flex-col max-h-60 overflow-hidden shadow-inner">
             <div className="flex items-center gap-2 text-primary font-bold text-sm mb-3 border-b border-border/50 pb-2">
               {isDownloading ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
-              Execution Console
+              {t('common.console')}
             </div>
             <div className="overflow-y-auto font-mono text-xs text-muted-foreground flex flex-col gap-1 pr-2">
               {logs.map((log, idx) => (
@@ -325,7 +327,7 @@ export function DataDownload() {
                   {log}
                 </div>
               ))}
-              {logs.length === 0 && <div className="text-muted-foreground/50 italic">Waiting for log stream...</div>}
+              {logs.length === 0 && <div className="text-muted-foreground/50 italic">{t('common.waitingLogs')}</div>}
             </div>
           </div>
         ) : (
@@ -333,7 +335,7 @@ export function DataDownload() {
             <div className="flex items-center justify-between sticky top-0 bg-primary/5 pb-2">
               <div className="flex items-center gap-2 text-primary font-bold text-sm">
                 <Info className="w-4 h-4" />
-                Batch Local Coverage ({coverageResults.length} targets)
+                {t('data.coverage', { count: coverageResults.length })}
               </div>
             </div>
             
@@ -347,17 +349,17 @@ export function DataDownload() {
                   {res.coverage?.exists ? (
                     <div className="text-xs text-muted-foreground mt-1 space-y-1">
                       <div className="flex justify-between">
-                        <span>Range:</span>
+                        <span>{t('data.range')}:</span>
                         <span className="font-mono text-primary/80">{res.coverage.start_date.split(' ')[0]} → {res.coverage.end_date.split(' ')[0]}</span>
                       </div>
                       <div className="flex justify-between">
-                        <span>Records:</span>
+                        <span>{t('data.records')}:</span>
                         <span className="font-mono">{res.coverage.total_records.toLocaleString()}</span>
                       </div>
                     </div>
                   ) : (
                     <div className="text-xs text-muted-foreground mt-1 flex h-full items-center">
-                      No local data found. Will fetch fresh.
+                      {t('data.noLocal')}
                     </div>
                   )}
                 </div>
@@ -365,7 +367,7 @@ export function DataDownload() {
               
               {coverageResults.length === 0 && (
                 <div className="text-sm text-muted-foreground italic col-span-full">
-                  Please select targets to view local coverage...
+                  {t('data.selectTargets')}
                 </div>
               )}
             </div>
@@ -390,13 +392,13 @@ export function DataDownload() {
             <div className="flex flex-col gap-3">
               <div className="flex items-center gap-2 p-4 bg-green-500/10 text-green-500 border border-green-500/20 rounded-lg">
                 <CheckCircle2 className="w-5 h-5" />
-                <span>Successfully completed batch download!</span>
+                <span>{t('data.downloadDone')}</span>
               </div>
-              <button 
+              <button
                 onClick={() => setProgress(0)}
                 className="w-full text-sm text-muted-foreground hover:text-foreground underline transition-colors"
               >
-                Start another batch
+                {t('data.anotherBatch')}
               </button>
             </div>
           ) : (
@@ -405,7 +407,7 @@ export function DataDownload() {
               className="w-full flex items-center justify-center gap-2 bg-primary text-primary-foreground py-3 rounded-md font-bold hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
               disabled={symbols.length === 0 || timeframes.length === 0 || !tradeType}
             >
-              <Download className="w-5 h-5" /> Execute Batch Download
+              <Download className="w-5 h-5" /> {t('data.execute')}
             </button>
           )}
         </div>
