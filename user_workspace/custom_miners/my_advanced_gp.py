@@ -51,18 +51,23 @@ class AdvancedSampleGPMiner(BaseFactorMiner):
         self.terminals = self.config.get("data_feeds", {}).get("required_streams", ["close", "volume", "high", "low"])
         self.population_size = self.config.get("population_size", 10)
         self.max_depth = 4 # 允许深度为 4，但禁止长窗口算子嵌套
+        # 随机种子: config 传 random_seed 则每次挖掘可复现(同窗口同因子), 缺省保持全局随机
+        seed = self.config.get("random_seed", None)
+        self.rng = random.Random(seed) if seed is not None else random
+        if seed is not None:
+            logger.info(f"AdvancedSampleGP: seeded RNG (random_seed={seed}) — 同窗口重复挖掘将产出相同因子")
         # 允许选择的非重型算子集合
         self.light_operators = [op for op in self.operators if op not in HEAVY_WINDOW_OPERATORS]
         if not self.light_operators:
             self.light_operators = ["add", "sub", "mul", "div", "ts_mean"]
         
     def _generate_random_tree(self, current_depth: int, allow_heavy_op: bool = True) -> Any:
-        if current_depth >= self.max_depth or random.random() < 0.25:
-            return random.choice(self.terminals)
+        if current_depth >= self.max_depth or self.rng.random() < 0.25:
+            return self.rng.choice(self.terminals)
         
         # 如果子树中已存在重型算子，则禁止再次选择重型算子
         candidate_ops = self.operators if allow_heavy_op else self.light_operators
-        op = random.choice(candidate_ops)
+        op = self.rng.choice(candidate_ops)
         
         # 如果当前选择了重型算子，后续子树禁止再次选择重型算子
         next_allow_heavy = False if op in HEAVY_WINDOW_OPERATORS else allow_heavy_op
@@ -84,7 +89,7 @@ class AdvancedSampleGPMiner(BaseFactorMiner):
         if op in HEAVY_WINDOW_OPERATORS:
             if inside_heavy_op:
                 # 触发防嵌套约束：将重型算子降级为终结符或基础二元运算
-                return random.choice(self.terminals)
+                return self.rng.choice(self.terminals)
             current_inside = True
         else:
             current_inside = inside_heavy_op
@@ -98,7 +103,7 @@ class AdvancedSampleGPMiner(BaseFactorMiner):
         return node
         
     def _mutate(self, ast: Any) -> Any:
-        if random.random() < 0.2: 
+        if self.rng.random() < 0.2: 
             return self._generate_random_tree(current_depth=1)
             
         if isinstance(ast, dict) and "op" in ast:

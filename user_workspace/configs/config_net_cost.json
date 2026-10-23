@@ -59,5 +59,6 @@
     },
     "storage": {
         "db_root": "factor_db"
-    }
+    },
+    "random_seed": 42
 }
